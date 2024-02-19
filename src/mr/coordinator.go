@@ -27,7 +27,7 @@ type Coordinator struct {
 	availableTasks chan Task
 }
 
-// Your code here -- RPC handlers for the worker to call.
+// ApplyTask RPC handlers for the worker to call.
 func (c *Coordinator) ApplyTask(req *ApplyTaskRequest, resp *ApplyTaskResponse) error {
 	// 记录 Worker 的上一个 Task 已经运行完成
 	if req.LastTaskType != "" {
@@ -110,29 +110,26 @@ func (c *Coordinator) transit() {
 	}
 }
 
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
-}
-
 // start a thread that listens for RPCs from worker.go
 func (c *Coordinator) server() {
-	rpc.Register(c)
+	_ = rpc.Register(c)
 	rpc.HandleHTTP()
 	//l, e := net.Listen("tcp", ":1234")
-	sockname := coordinatorSock()
-	os.Remove(sockname)
-	l, e := net.Listen("unix", sockname)
+	sockName := coordinatorSock()
+	_ = os.Remove(sockName)
+	l, e := net.Listen("unix", sockName)
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
-	go http.Serve(l, nil)
+	go func() {
+		err := http.Serve(l, nil)
+		if err != nil {
+			log.Fatalf("serve err: %v", err)
+		}
+	}()
 }
 
-// main/mrcoordinator.go calls Done() periodically to find out
+// Done main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
 	c.mu.Lock()
@@ -140,7 +137,7 @@ func (c *Coordinator) Done() bool {
 	return c.stage == ""
 }
 
-// create a Coordinator.
+// MakeCoordinator create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {

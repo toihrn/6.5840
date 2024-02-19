@@ -2,7 +2,7 @@ package mr
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -12,7 +12,7 @@ import "log"
 import "net/rpc"
 import "hash/fnv"
 
-// Map functions return a slice of KeyValue.
+// KeyValue Map functions return a slice of KeyValue.
 type KeyValue struct {
 	Key   string
 	Value string
@@ -24,16 +24,18 @@ func (a ByKey) Len() int           { return len(a) }
 func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
-// use ihash(key) % NReduce to choose the reduce
+// use iHash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
-func ihash(key string) int {
+func iHash(key string) int {
 	h := fnv.New32a()
-	h.Write([]byte(key))
+	_, err := h.Write([]byte(key))
+	if err != nil {
+		log.Fatalf("iHash write err: %v", err)
+	}
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-// main/mrworker.go calls this function.
-func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
+func Worker(mapF func(string, string) []KeyValue, reduceF func(string, []string) string) {
 	// 单机运行，直接使用 PID 作为 Worker ID，方便 debug
 	id := strconv.Itoa(os.Getpid())
 	log.Printf("Worker %s started\n", id)
@@ -63,25 +65,28 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 			if err != nil {
 				log.Fatalf("Failed to open map input file %s: %e", resp.MapInputFile, err)
 			}
-			content, err := ioutil.ReadAll(file)
+			content, err := io.ReadAll(file)
 			if err != nil {
 				log.Fatalf("Failed to read map input file %s: %e", resp.MapInputFile, err)
 			}
 			// 传递输入数据至 MAP 函数，得到中间结果
-			kva := mapf(resp.MapInputFile, string(content))
+			kva := mapF(resp.MapInputFile, string(content))
 			// 按 Key 的 Hash 值对中间结果进行分桶
 			hashedKva := make(map[int][]KeyValue)
 			for _, kv := range kva {
-				hashed := ihash(kv.Key) % resp.ReduceNum
+				hashed := iHash(kv.Key) % resp.ReduceNum
 				hashedKva[hashed] = append(hashedKva[hashed], kv)
 			}
 			// 写出中间结果文件
 			for i := 0; i < resp.ReduceNum; i++ {
-				ofile, _ := os.Create(tmpMapOutFile(id, resp.TaskIndex, i))
+				oFile, _ := os.Create(tmpMapOutFile(id, resp.TaskIndex, i))
 				for _, kv := range hashedKva[i] {
-					fmt.Fprintf(ofile, "%v\t%v\n", kv.Key, kv.Value)
+					_, err := fmt.Fprintf(oFile, "%v\t%v\n", kv.Key, kv.Value)
+					if err != nil {
+						log.Fatalf("Failed to write map output file %s: %e\n", oFile.Name(), err)
+					}
 				}
-				ofile.Close()
+				_ = oFile.Close()
 			}
 		} else if resp.TaskType == TaskReduce {
 			// 读取输入数据
@@ -90,11 +95,11 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 				inputFile := finalMapOutFile(mi, resp.TaskIndex)
 				file, err := os.Open(inputFile)
 				if err != nil {
-					log.Fatalf("Failed to open map output file %s: %e", inputFile, err)
+					log.Fatalf("Failed to open map output file %s: %e\n", inputFile, err)
 				}
-				content, err := ioutil.ReadAll(file)
+				content, err := io.ReadAll(file)
 				if err != nil {
-					log.Fatalf("Failed to read map output file %s: %e", inputFile, err)
+					log.Fatalf("Failed to read map output file %s: %e\n", inputFile, err)
 				}
 				lines = append(lines, strings.Split(string(content), "\n")...)
 			}
@@ -111,7 +116,7 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 			}
 			sort.Sort(ByKey(kva))
 
-			ofile, _ := os.Create(tmpReduceOutFile(id, resp.TaskIndex))
+			oFile, _ := os.Create(tmpReduceOutFile(id, resp.TaskIndex))
 			i := 0
 			for i < len(kva) {
 				j := i + 1
@@ -122,17 +127,19 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 				for k := i; k < j; k++ {
 					values = append(values, kva[k].Value)
 				}
-				output := reducef(kva[i].Key, values)
+				output := reduceF(kva[i].Key, values)
 
-				fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
-
+				_, err := fmt.Fprintf(oFile, "%v %v\n", kva[i].Key, output)
+				if err != nil {
+					log.Fatalf("Failed to write reduce output file %s: %e\n", oFile.Name(), err)
+				}
 				i = j
 			}
-			ofile.Close()
+			_ = oFile.Close()
 		}
 		lastTaskType = resp.TaskType
 		lastTaskIndex = resp.TaskIndex
-		log.Printf("Finished %s task %d", resp.TaskType, resp.TaskIndex)
+		log.Printf("Finished %s task %d\n", resp.TaskType, resp.TaskIndex)
 	}
 
 	log.Printf("Worker %s exit\n", id)
@@ -141,16 +148,15 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
 // returns false if something goes wrong.
-func call(rpcname string, req interface{}, resp interface{}) bool {
+func call(rpcName string, req interface{}, resp interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
-	sockname := coordinatorSock()
-	c, err := rpc.DialHTTP("unix", sockname)
+	sockName := coordinatorSock()
+	c, err := rpc.DialHTTP("unix", sockName)
 	if err != nil {
 		log.Fatal("dialing:", err)
 	}
-	defer c.Close()
-
-	err = c.Call(rpcname, req, resp)
+	defer func() { _ = c.Close() }()
+	err = c.Call(rpcName, req, resp)
 	if err == nil {
 		return true
 	}
