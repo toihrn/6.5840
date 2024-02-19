@@ -2,15 +2,15 @@ package mr
 
 import (
 	"fmt"
+	"hash/fnv"
 	"io"
+	"log"
+	"net/rpc"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 )
-import "log"
-import "net/rpc"
-import "hash/fnv"
 
 // KeyValue Map functions return a slice of KeyValue.
 type KeyValue struct {

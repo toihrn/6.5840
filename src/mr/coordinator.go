@@ -3,13 +3,13 @@ package mr
 import (
 	"log"
 	"math"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
 	"sync"
 	"time"
 )
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
 
 type Stage string
 
